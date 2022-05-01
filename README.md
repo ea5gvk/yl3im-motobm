@@ -33,8 +33,7 @@ will create XML zone file(s) with all German repeaters for 2m band with 6 digit 
 
 * location based search (GPS area)
 * ... you name it :)
-* 
-Para despues pegar el contenido de myzone.xml generado en el codeplug Motorola, tendremos que copiar con un editor de texto dicho contenido del xml y pegar en este apartado del Codeplugs, que correspondea Zonas, con el boton derecho nos saldra estas opciones que se ven en la ilustración.
+* Ahora para darle utilidad a la aplicaciones, debemos de pegar el contenido de myzone.xml generado en el codeplug Motorola, tendremos que copiar con un editor de texto dicho contenido del xml y pegar en este apartado del Codeplugs, que correspondea Zonas, con el boton derecho nos saldra estas opciones que se ven en la ilustración.
 
 ![imagen](https://user-images.githubusercontent.com/20498935/166138433-ca580d1a-c00b-4cf4-8136-c4549999a3f8.png)
 
