@@ -1,30 +1,56 @@
+#!/usr/bin/env python3
+
 import argparse
 import json
 from os.path import exists
 from urllib import request
+from tabulate import tabulate
+
+import geopy.distance
+import maidenhead
+import mobile_codes
 
 parser = argparse.ArgumentParser(description='Generate MOTOTRBO zone files from BrandMeister.')
 
-parser.add_argument('-n', '--name', required=True, help='Zone name.')
-parser.add_argument('-b', '--band', choices=['vhf', 'uhf'], required=True, help='Repeater band.')
-
-parser.add_argument('-t', '--type', choices=['mcc'], required=True,
-                    help='Select repeaters by MCC code, QTH locator index or GPS coordinates. Only MCC option is implemented as of now.')
-parser.add_argument('-m', '--mcc', help='First repeater ID digits, usually a 3 digits MCC.')
-
 parser.add_argument('-f', '--force', action='store_true',
                     help='Forcibly download repeater list even if it exists locally.')
+parser.add_argument('-n', '--name', required=True, help='Zone name. Choose it freely on your own.')
+parser.add_argument('-b', '--band', choices=['vhf', 'uhf'], required=True, help='Repeater band.')
+
+parser.add_argument('-t', '--type', choices=['mcc', 'qth', 'gps'], required=True,
+                    help='Select repeaters by MCC code, QTH locator index or GPS coordinates.')
+
+parser.add_argument('-m', '--mcc', help='First repeater ID digits, usually a 3 digits MCC. '
+                                        'You can also use a two letter country code instead.')
+parser.add_argument('-q', '--qth', help='QTH locator index like KO26BX.')
+
+parser.add_argument('-r', '--radius', default=100, type=int,
+                    help='Area radius in kilometers around the center of the chosen QTH locator. Defaults to 100.')
+
+parser.add_argument('-lat', type=float, help='Latitude of a GPS position.')
+parser.add_argument('-lng', '-lon', type=float, help='Longitude of a GPS position.')
+
 parser.add_argument('-p', '--pep', action='store_true', help='Only select repeaters with defined power.')
 parser.add_argument('-6', '--six', action='store_true', help='Only select repeaters with 6 digit ID.')
 parser.add_argument('-zc', '--zone-capacity', default=160, type=int,
-                    help='Channel capacity within zone. 160 by default as for top models, use 16 for the lite ones.')
+                    help='Channel capacity within zone. 160 by default as for top models, use 16 for the lite and '
+                         'non-display ones.')
 
 args = parser.parse_args()
 
 bm_url = 'https://api.brandmeister.network/v1.0/repeater/?action=LIST'
 bm_file = 'BM.json'
 filtered_list = []
+output_list = []
 existing = {}
+
+if args.type == 'qth':
+    qth_coords = maidenhead.to_location(args.qth, center=True)
+if args.type == 'gps':
+    qth_coords = (args.lat, args.lng)
+
+if args.mcc and not str(args.mcc).isdigit():
+    args.mcc = mobile_codes.alpha2(args.mcc)[4]
 
 
 def download_file():
@@ -34,9 +60,14 @@ def download_file():
         print(f'Saved to {bm_file}')
 
 
+def check_distance(loc1, loc2):
+    return geopy.distance.great_circle(loc1, loc2).km
+
+
 def filter_list():
     global filtered_list
     global existing
+    global qth_coords
 
     f = open(bm_file, "r")
 
@@ -45,7 +76,22 @@ def filter_list():
                 args.band == 'uhf' and item['rx'].startswith('4'))):
             continue
 
-        if args.type == 'mcc' and not item['repeaterid'].startswith(args.mcc):
+        if args.type == 'mcc':
+            is_starts = False
+
+            if type(args.mcc) is list:
+                for mcc in args.mcc:
+                    if item['repeaterid'].startswith(mcc):
+                        is_starts = True
+            else:
+                if item['repeaterid'].startswith(args.mcc):
+                    is_starts = True
+
+            if not is_starts:
+                continue
+
+        if (args.type == 'qth' or args.type == 'gps') and check_distance(qth_coords,
+                                                                         (item['lat'], item['lng'])) > args.radius:
             continue
 
         if args.pep and (not str(item['pep']).isdigit() or str(item['pep']) == '0'):
@@ -73,15 +119,22 @@ def filter_list():
 
 
 def process_channels():
+    global output_list
+
     channel_chunks = [filtered_list[i:i + args.zone_capacity] for i in range(0, len(filtered_list), args.zone_capacity)]
     chunk_number = 0
 
     for chunk in channel_chunks:
         channels = ''
         chunk_number += 1
+        output_list = []
 
         for item in chunk:
             channels += format_channel(item)
+
+        print('\n',
+              tabulate(output_list, headers=['Callsign', 'RX', 'TX', 'CC', 'City', 'URL'], disable_numparse=True),
+              '\n')
 
         if len(channel_chunks) == 1:
             zone_alias = args.name
@@ -107,6 +160,7 @@ def process_channels():
 
 def format_channel(item):
     global existing
+    global output_list
 
     if existing[item['callsign']] == 1:
         ch_alias = item['callsign']
@@ -117,7 +171,8 @@ def format_channel(item):
     ch_tx = item['tx']
     ch_cc = item['colorcode']
 
-    print(f"{ch_alias} Rx: {ch_rx} Tx: {ch_tx} CC: {ch_cc} ID: {item['repeaterid']}")
+    output_list.append([ch_alias, ch_rx, ch_tx, ch_cc, item['city'],
+                        f"https://brandmeister.network/?page=repeater&id={item['repeaterid']}"])
 
     if item['rx'] == item['tx']:
         return f'''
@@ -125,8 +180,8 @@ def format_channel(item):
   <field name="CP_PERSTYPE" Name="Digital">DGTLCONV6PT25</field>
   <field name="CP_SLTASSGMNT" Name="2">SLOT2</field>
   <field name="CP_COLORCODE">{ch_cc}</field>
-  <field name="CP_TXFREQ">{ch_tx}</field>
-  <field name="CP_RXFREQ">{ch_rx}</field>
+  <field name="CP_TXFREQ">{ch_rx}</field>
+  <field name="CP_RXFREQ">{ch_tx}</field>
   <field name="CP_EMACKALERTEN">True</field>
   <field name="CP_CNVPERSALIAS">{ch_alias}</field>
   <field name="CP_TXINHXPLEN" Name="Color Code Free">MTCHCLRCD</field>
@@ -146,8 +201,8 @@ def format_channel(item):
   <field name="CP_PERSTYPE" Name="Digital">DGTLCONV6PT25</field>
   <field name="CP_SLTASSGMNT" Name="1">SLOT1</field>
   <field name="CP_COLORCODE">{ch_cc}</field>
-  <field name="CP_TXFREQ">{ch_tx}</field>
-  <field name="CP_RXFREQ">{ch_rx}</field>
+  <field name="CP_TXFREQ">{ch_rx}</field>
+  <field name="CP_RXFREQ">{ch_tx}</field>
   <field name="CP_EMACKALERTEN">True</field>
   <field name="CP_CNVPERSALIAS">{ch_alias} TS1</field>
   <field name="CP_TXINHXPLEN" Name="Color Code Free">MTCHCLRCD</field>
@@ -164,8 +219,8 @@ def format_channel(item):
   <field name="CP_PERSTYPE" Name="Digital">DGTLCONV6PT25</field>
   <field name="CP_SLTASSGMNT" Name="2">SLOT2</field>
   <field name="CP_COLORCODE">{ch_cc}</field>
-  <field name="CP_TXFREQ">{ch_tx}</field>
-  <field name="CP_RXFREQ">{ch_rx}</field>
+  <field name="CP_TXFREQ">{ch_rx}</field>
+  <field name="CP_RXFREQ">{ch_tx}</field>
   <field name="CP_EMACKALERTEN">True</field>
   <field name="CP_CNVPERSALIAS">{ch_alias} TS2</field>
   <field name="CP_TXINHXPLEN" Name="Color Code Free">MTCHCLRCD</field>
@@ -186,9 +241,10 @@ def write_zone_file(zone_alias, contents):
     zone_file = open(zone_file_name, "wt")
     zone_file.write(contents)
     zone_file.close()
-    print(f'Zone "{zone_file_name}" file written.\n')
+    print(f'Zone file "{zone_file_name}" written.\n')
 
 
-download_file()
-filter_list()
-process_channels()
+if __name__ == '__main__':
+    download_file()
+    filter_list()
+    process_channels()
